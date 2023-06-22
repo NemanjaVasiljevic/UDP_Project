@@ -9,10 +9,15 @@
 #define SERVER_PORT 8888
 #define BUFFER_SIZE 1024
 
+typedef struct{
+    int messageNum;
+    char message[BUFFER_SIZE];
+}Data;
+
+
 int main() {
     int sockfd;
     struct sockaddr_in server_addr, client_addr;
-    char buffer[BUFFER_SIZE];
 
     // Create a UDP socket
     if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
@@ -46,6 +51,9 @@ int main() {
 
     while (1) {
         // Use select() for non-blocking receive
+        char* buffer = (char*)malloc(sizeof(Data));
+        Data* data = (Data*)malloc(sizeof(Data));
+
         fd_set read_fds;
         FD_ZERO(&read_fds);
         FD_SET(sockfd, &read_fds);
@@ -66,20 +74,25 @@ int main() {
                 socklen_t client_addr_len = sizeof(client_addr);
 
                 // Receive data from a client
-                if (recvfrom(sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&client_addr, &client_addr_len) == -1) {
+                if (recvfrom(sockfd, buffer, sizeof(Data), 0, (struct sockaddr *)&client_addr, &client_addr_len) == -1) {
                     perror("recvfrom");
                     exit(1);
                 }
+                
+                memcpy(data,buffer,sizeof(Data));
 
-                printf("Received from client: %s", buffer);
+                printf("Received from client: %d %s\n", data->messageNum, data->message);
 
                 // Echo the received message back to the client
-                if (sendto(sockfd, buffer, strlen(buffer), 0, (struct sockaddr *)&client_addr, sizeof(client_addr)) == -1) {
+                if (sendto(sockfd, "ACK", 4, 0, (struct sockaddr *)&client_addr, sizeof(client_addr)) == -1) {
                     perror("sendto");
                     exit(1);
                 }
             }
         }
+
+        free(buffer);
+        free(data);
     }
 
     // Close the socket
