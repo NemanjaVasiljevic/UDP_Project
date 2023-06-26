@@ -1,208 +1,209 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <sys/select.h>
-#include <fcntl.h>
+#include <sys/time.h>
 
-#define SERVER_IP "127.0.0.1"
+#define MAX_MESSAGE_LEN 24
 #define SERVER_PORT 8888
-#define BUFFER_SIZE 1024
-#define MAX_MESSAGE_LEN 20
-
-int SendMessageLength(int* length, int sockfd, struct sockaddr_in server_addr);
+#define TIMEOUT_SECONDS 3
 
 
-typedef struct{
-    int messageLength;
-    char message[MAX_MESSAGE_LEN];
-}Data;
+typedef struct {
+    char context[MAX_MESSAGE_LEN];
+} Message;
+
+typedef struct {
+    int firstByteIndex;
+    int lastByteIndex;
+} Header;
+
+typedef struct {
+    Header header;
+    Message message;
+} Packet;
 
 
-static int messageCounter = 0;
+int ResendMessage(Packet* packet, int clientSocket, struct sockaddr_in serverAddress);
+
 
 
 int main() {
+    int clientSocket;
+    struct sockaddr_in serverAddress;
 
-#pragma region SOCKET_SETUP     
-    
-    int sockfd;
-    struct sockaddr_in server_addr;
-
-    // Create a UDP socket
-    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-        perror("socket");
-        exit(1);
+    // Create UDP socket
+    clientSocket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (clientSocket < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
     }
 
-    // Configure server address
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SERVER_PORT);
-    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
-        perror("inet_pton");
-        exit(1);
-    }
+    // Set server address
+    memset(&serverAddress, 0, sizeof(serverAddress));
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_port = htons(SERVER_PORT);
+    serverAddress.sin_addr.s_addr = inet_addr("127.0.0.1"); // Change to the server's IP address
 
-    // Set the socket to non-blocking mode
-    int flags = fcntl(sockfd, F_GETFL, 0);
-    if (flags == -1) {
-        perror("fcntl");
-        exit(1);
-    }
-    if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) == -1) {
-        perror("fcntl");
-        exit(1);
-    }
-
-#pragma endregion
-    // Send data to the server
-
+    // Prepare packet
     while(1){
 
-        Data* data = (Data*)malloc(sizeof(Data));
+        int resendCounter = 3;
 
-
-        printf("Enter message: ");
-        scanf("%s",data->message);
-        char byte;
-        char* buffer = (char*)malloc(sizeof(Data));
-        memcpy(buffer, data, sizeof(Data));
-
-        size_t messageLen = strlen(data->message);
-        size_t bytesSent = 0;
+        Packet* packet = (Packet*)malloc(sizeof(Packet));
+        Packet* backupPacket = (Packet*)malloc(sizeof(Packet));
+        char* ack = (char*)malloc(sizeof(char));
         
-        if(messageLen > MAX_MESSAGE_LEN){
 
-            printf("The message length was exceeded please write something shorter\n");
-
-        }else{
-
-
-            data->messageLength = messageLen;                      
-            if(SendMessageLength((int *)&messageLen,sockfd,server_addr)!=1){
-
-                printf("The message length is too great for the server to accept\n");
-
-            }else{
-                printf("Upao u while za slanje\n");
+        packet->header.firstByteIndex = 0;
+        printf("Enter your message:");
+        fgets(packet->message.context,MAX_MESSAGE_LEN,stdin);
+        packet->header.lastByteIndex = strlen(packet->message.context)-2;
 
 
-                while(bytesSent<messageLen){
-                    printf("Upao u while za slanje bajtova\n");
-
-                    byte = data->message[bytesSent];
-
-                    if (sendto(sockfd, &byte, sizeof(char), 0, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-                        perror("sendto");
-                        exit(1);
-                    }
-
-                    // Use select() for non-blocking receive
-                    fd_set read_fds;
-                    FD_ZERO(&read_fds);
-                    FD_SET(sockfd, &read_fds);
-
-                    struct timeval timeout;
-                    timeout.tv_sec = 5;  // Set a timeout of 5 seconds
-                    timeout.tv_usec = 0;
-
-                    int select_result = select(sockfd + 1, &read_fds, NULL, NULL, &timeout);
-
-
-                    if (select_result == -1) {
-
-                        perror("select");
-                        exit(1);
-
-                    } else if (select_result == 0) {
-
-                        printf("Timeout reached. Resending message...\n");
-                        /*Implementirati ponovno slanje*/
-
-                    } else {
-                        if (FD_ISSET(sockfd, &read_fds)) {
-                            char ackByte;
-                            socklen_t server_addr_len = sizeof(server_addr);
-
-                            if (recvfrom(sockfd, &ackByte, sizeof(char), 0, (struct sockaddr *)&server_addr, &server_addr_len) == -1) {
-                                perror("recvfrom");
-                                exit(1);
-                            }
-
-                            //Ispis ACK prijema
-                            printf("Received: %c\n", ackByte);
-                            if(ackByte == byte){
-                                bytesSent++;
-                            }
-                        }
-
-                    }
-                }
-            }         
+        // Send packet to the server
+        if (sendto(clientSocket, packet, sizeof(Packet), 0, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0) {
+            perror("Packet sending failed");
+            exit(EXIT_FAILURE);
         }
 
-        free(buffer);
-        free(data);
+        printf("Packet sent to the server.\n");
+
+        // Set up timer
+        struct timeval timeout;
+        timeout.tv_sec = TIMEOUT_SECONDS;
+        timeout.tv_usec = 0;
+
+        // Set up file descriptor set for select()
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(clientSocket, &readfds);
+
+        // Wait for response or timeout
+        int selectResult = select(clientSocket + 1, &readfds, NULL, NULL, &timeout);
+        int resendRes = 0;
+        if (selectResult == -1) {
+            perror("Select error");
+            exit(EXIT_FAILURE);
+
+
+        }else if(selectResult == 0) {
+            // Timeout occurred, resend the message
+            while(resendCounter!=0 || resendRes != 1){
+                printf("Timeout occurred, attempts left %d. Resending message...\n",resendCounter);
+                resendRes = ResendMessage(backupPacket,clientSocket,serverAddress);
+                resendCounter--;
+            }
+            resendCounter = 3;
+        }
+
+
+
+        backupPacket = packet;
+        socklen_t serverAddressLength = sizeof(serverAddress);
+
+        for(int i = packet->header.firstByteIndex; i<=packet->header.lastByteIndex;i++){
+            //proveri byte po byte da li je to to
+            int tempAck;
+            if (recvfrom(clientSocket, ack, sizeof(char), 0, (struct sockaddr*)&serverAddress, &serverAddressLength) < 0) {
+                perror("Packet receiving failed");
+                exit(EXIT_FAILURE);
+            }
+            printf("Poredim sad %c sa servera sa %c sa klijenta\n",*ack,packet->message.context[i]);
+            if(strcmp(ack, &packet->message.context[i])==0){
+
+                printf("Byte at index %d is not the same as the original one (Server:%c Client:%c)",i,*ack,packet->message.context[i]);
+                printf("\nResending message.....\n");
+                tempAck = -1;
+                if (sendto(clientSocket, &tempAck, sizeof(int), 0, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0) {
+                    perror("Packet sending failed");
+                    exit(EXIT_FAILURE);
+                }
+
+                // Set up timer
+                struct timeval timeout;
+                timeout.tv_sec = TIMEOUT_SECONDS;
+                timeout.tv_usec = 0;
+
+                // Set up file descriptor set for select()
+                fd_set readfds;
+                FD_ZERO(&readfds);
+                FD_SET(clientSocket, &readfds);
+
+                // Wait for response or timeout
+                int selectResult = select(clientSocket + 1, &readfds, NULL, NULL, &timeout);
+                int resendRes = 0;
+                if (selectResult == -1) {
+                    perror("Select error");
+                    exit(EXIT_FAILURE);
+
+
+                }else if(selectResult == 0) {
+                    // Timeout occurred, resend the message
+                    while(resendCounter!=0 || resendRes != 1){
+                        printf("Timeout occurred, attempts left %d. Resending message...\n",resendCounter);
+                        resendRes = ResendMessage(backupPacket,clientSocket,serverAddress);
+                        resendCounter--;
+                    }
+                    resendCounter = 3;
+                }
+
+
+                ResendMessage(packet,clientSocket,serverAddress);
+                
+            }else{
+                printf("Byte at server at index %d is %c and original is %c\n",i,*ack,packet->message.context[i]);
+                tempAck = i+1;
+                if (sendto(clientSocket, &tempAck, sizeof(int), 0, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0) {
+                    perror("Packet sending failed");
+                    exit(EXIT_FAILURE);
+                }
+            }
+            
+        }
+        ack = NULL;
+        free(ack);
+        free(packet);
     }
     // Close the socket
-    close(sockfd);
+    close(clientSocket);
 
     return 0;
 }
 
-
-
-int SendMessageLength(int* length, int sockfd, struct sockaddr_in server_addr){
-
-    int ackByte;
-
-
-    if (sendto(sockfd, length, sizeof(int), 0, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-                    perror("sendto");
-                    exit(1);
-    }
-
-    // Use select() for non-blocking receive
-    fd_set read_fds;
-    FD_ZERO(&read_fds);
-    FD_SET(sockfd, &read_fds);
-
-    struct timeval timeout;
-    timeout.tv_sec = 5;  // Set a timeout of 5 seconds
-    timeout.tv_usec = 0;
-
-    int select_result = select(sockfd + 1, &read_fds, NULL, NULL, &timeout);
-
-
-    if (select_result == -1) {
-
-        perror("select");
-        return 0;
-
-    } else if (select_result == 0) {
-
-        printf("Timeout reached. Resending message...\n");
-        return 0;
-
-    } else {
-        if (FD_ISSET(sockfd, &read_fds)) {
-            socklen_t server_addr_len = sizeof(server_addr);
-
-            if (recvfrom(sockfd, &ackByte, sizeof(int), 0, (struct sockaddr *)&server_addr, &server_addr_len) == -1) {
-                perror("recvfrom");
-                return 0;
-            }
-
-            //Ispis ACK prijema
-            printf("Received: %d\n", ackByte);
+int ResendMessage(Packet* packet, int clientSocket, struct sockaddr_in serverAddress){
+    if (sendto(clientSocket, packet, sizeof(Packet), 0, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0) {
+            perror("Packet sending failed");
+            exit(EXIT_FAILURE);
+            return 0;
         }
-        
-    }
 
-    if(ackByte!=0){
-        return 1;
-    }else{
-        return 0;
-    }
+        printf("Packet sent to the server.\n");
+
+        // Set up timer
+        struct timeval timeout;
+        timeout.tv_sec = TIMEOUT_SECONDS;
+        timeout.tv_usec = 0;
+
+        // Set up file descriptor set for select()
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(clientSocket, &readfds);
+
+        // Wait for response or timeout
+        int selectResult = select(clientSocket + 1, &readfds, NULL, NULL, &timeout);
+
+        if (selectResult == -1) {
+            perror("Select error");
+            exit(EXIT_FAILURE);
+
+
+        }else if(selectResult == 0) {
+            return 0;
+        }else{
+            return 1;
+        }
 }
