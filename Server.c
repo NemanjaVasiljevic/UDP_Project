@@ -15,6 +15,9 @@ typedef struct {
 typedef struct {
     int firstByteIndex;
     int lastByteIndex;
+    int window;
+    int seqNum;
+    int ackNum;
 } Header;
 
 typedef struct {
@@ -47,50 +50,69 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    printf("UDP Server is running and waiting for packets...\n");
+    int serverWindow = 0;
+    int clientWindow = 0;
+    int lastProcessedSeqNum = -1;
 
-    // Receive packet from client
-    Packet receivedPacket;
-    while(1){
-        
-        char* ack = (char*)malloc(sizeof(char));
+    printf("Enter server window size in bytes: ");
+    scanf("%d", &serverWindow);
+    getchar(); // Consume the newline character
 
-        sleep(10);
-        printf("Prosao 10s sleep\n");
+    if (recvfrom(serverSocket, &clientWindow, sizeof(int), 0, (struct sockaddr*)&clientAddress, &clientAddressLength) < 0) {
+        perror("Packet receiving failed");
+        exit(EXIT_FAILURE);
+    }
 
+    printf("Window from client received (%d bytes). Sending my window size...\n", clientWindow);
+    if (sendto(serverSocket, &serverWindow, sizeof(int), 0, (struct sockaddr*)&clientAddress, clientAddressLength) < 0) {
+        perror("Packet sending failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Handshake complete\nUDP Server is running and waiting for packets...\n");
+    fflush(stdin);
+
+
+    sleep(10);
+
+    while (1) {
         if (recvfrom(serverSocket, buffer, sizeof(Packet), 0, (struct sockaddr*)&clientAddress, &clientAddressLength) < 0) {
             perror("Packet receiving failed");
             exit(EXIT_FAILURE);
         }
 
+        Packet receivedPacket;
         memcpy(&receivedPacket, buffer, sizeof(Packet));
 
-        printf("Received packet from client:\n");
-        printf("First Byte Index: %d\n", receivedPacket.header.firstByteIndex);
-        printf("Last Byte Index: %d\n", receivedPacket.header.lastByteIndex);
-        printf("Message: %s\n", receivedPacket.message.context);
-
-        int i = 0;
-
-        while(i<=receivedPacket.header.lastByteIndex){
-            ack = &receivedPacket.message.context[i];
-
-            printf("Postavio ack na %c index je %d\n",*ack, i);
-            if (sendto(serverSocket, ack, sizeof(char), 0, (struct sockaddr*)&clientAddress, clientAddressLength) < 0) {
-                perror("Packet sending failed");
-                exit(EXIT_FAILURE);
-            }
-            if (recvfrom(serverSocket, &i, sizeof(int), 0, (struct sockaddr*)&clientAddress, &clientAddressLength) < 0) {
-                perror("Packet receiving failed");
-                exit(EXIT_FAILURE);
-            }
-            if(i == -1){
-                break;
-            }
+        if (receivedPacket.header.seqNum <= lastProcessedSeqNum && receivedPacket.header.seqNum != -1) {
+            printf("Duplicate message received. Ignoring...\n");
+            continue;
         }
-        ack=NULL;
-        free(ack);
+
+        printf("Message: ");
+        for (int i = 0; i <= receivedPacket.header.lastByteIndex; i++) {
+            printf("%c", receivedPacket.message.context[i]);
+        }
+        printf("\n");
+
+        lastProcessedSeqNum = receivedPacket.header.seqNum;
+
+        int nextSeq = receivedPacket.header.seqNum;
+
+        if (receivedPacket.header.seqNum != -1) {
+            if ((strlen(receivedPacket.message.context) - 1) == receivedPacket.header.lastByteIndex) {
+                printf("Successfully received %d bytes. Next sequence starts at index %d\n", receivedPacket.header.seqNum, receivedPacket.header.seqNum + 1);
+            }
+        } else {
+            nextSeq = 0; // Indicates that the message is received in its entirety and there is no next sequence
+        }
+
+        if (sendto(serverSocket, &nextSeq, sizeof(nextSeq), 0, (struct sockaddr*)&clientAddress, clientAddressLength) < 0) {
+            perror("Packet sending failed");
+            exit(EXIT_FAILURE);
+        }
     }
+
     // Close the socket
     close(serverSocket);
 
