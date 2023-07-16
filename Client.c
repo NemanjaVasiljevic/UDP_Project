@@ -79,6 +79,8 @@ int main() {
 #pragma endregion
 
     // Prepare packet
+    char partedMessage[MAX_MESSAGE_LEN];
+
     while(1){
 
         Packet* packet = (Packet*)malloc(sizeof(Packet));
@@ -108,7 +110,7 @@ int main() {
             
 
             while(messageParts != 0){
-                char partedMessage[serverWindow];
+
                 j = 0;
                 memset(partedMessage, 0, sizeof(partedMessage)); 
                 
@@ -117,16 +119,16 @@ int main() {
                     if(messageBuffer[i]!='\0'){
                         partedMessage[j] = messageBuffer[i];
                         j++;
-                        byteCount++;
                     }else{
                         break;
                     }
                 }
 
-                packet->header.seqNum = byteCount-1;
+                byteCount++;
+                packet->header.seqNum = byteCount; //ovo predstavlja redni broj poslednjeg bajta u nizu koji se salje
                 memcpy(packet->message.context,partedMessage,sizeof(partedMessage));
                 packet->header.firstByteIndex = 0;
-                packet->header.lastByteIndex = j - 1;
+                packet->header.lastByteIndex = j - 1; //ovde se azurira ukupna duzina poruke
 
                 int resendCounter = 0;
                 int serverResponse = 0;
@@ -153,13 +155,16 @@ int main() {
                     int selectResult = select(clientSocket + 1, &readfds, NULL, NULL, &timeout);
 
                     if (selectResult == -1) {
+
                         perror("Select error");
                         exit(EXIT_FAILURE);
                     } else if (selectResult == 0) {
+
                         // Timeout occurred, resend the message
                         resendCounter++;
                         printf("Timeout occurred, attempts left %d. Resending message...\n", MAX_RESEND_ATTEMPTS - resendCounter + 1);
                     } else {
+
                         // Response received
                         socklen_t serverAddressLength = sizeof(serverAddress);
                         if (recvfrom(clientSocket, &serverResponse, sizeof(serverResponse), 0, (struct sockaddr*)&serverAddress, &serverAddressLength) < 0) {
@@ -167,7 +172,7 @@ int main() {
                             exit(EXIT_FAILURE);
                         }
 
-                        printf("Server responded with ack %d to resending\n", serverResponse);
+                        printf("Server responded with ack %d \n", serverResponse);
 
                         if (serverResponse == packet->header.seqNum) {
                             // Server acknowledged the message, exit the resend loop
@@ -185,7 +190,8 @@ int main() {
                     break;
                 }
 
-                packet->header.ackNum = serverResponse;
+                packet->header.ackNum = (serverResponse * serverWindow)-1; // (ukupno koliko je primio)
+                printf("\nHEADER ACKNUM %d\n",packet->header.ackNum);
                 messageParts--;
             }
 

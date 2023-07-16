@@ -73,41 +73,56 @@ int main() {
     fflush(stdin);
 
 
-    sleep(10);
+    //sleep(10); //test za resend
+
+    Packet receivedPacket;
+    char messageBuffer[MAX_MESSAGE_LEN];
+    memset(messageBuffer,0,sizeof(messageBuffer));
 
     while (1) {
+
         if (recvfrom(serverSocket, buffer, sizeof(Packet), 0, (struct sockaddr*)&clientAddress, &clientAddressLength) < 0) {
             perror("Packet receiving failed");
             exit(EXIT_FAILURE);
         }
 
-        Packet receivedPacket;
         memcpy(&receivedPacket, buffer, sizeof(Packet));
 
+        //ovim se resavam duplikata i dobijam samo jedan paket tokom ponovnog slanja npr. 3 puta je pokusato slanje
+        //poruke "dan" on ce je nakon prvog uspesnog primanja sacuvati i sve ostale poruke sa istom vrednoscu seqNum 
+        //ce da preskoci jer je tu sekvencu vec dobio
         if (receivedPacket.header.seqNum <= lastProcessedSeqNum && receivedPacket.header.seqNum != -1) {
             printf("Duplicate message received. Ignoring...\n");
             continue;
         }
 
-        printf("Message: ");
-        for (int i = 0; i <= receivedPacket.header.lastByteIndex; i++) {
-            printf("%c", receivedPacket.message.context[i]);
-        }
-        printf("\n");
-
         lastProcessedSeqNum = receivedPacket.header.seqNum;
+        int ackSeq = receivedPacket.header.seqNum;
 
-        int nextSeq = receivedPacket.header.seqNum;
 
         if (receivedPacket.header.seqNum != -1) {
-            if ((strlen(receivedPacket.message.context) - 1) == receivedPacket.header.lastByteIndex) {
-                printf("Successfully received %d bytes. Next sequence starts at index %d\n", receivedPacket.header.seqNum, receivedPacket.header.seqNum + 1);
+
+            printf("Successfully received %ld bytes in sequence %d\n", strlen(receivedPacket.message.context), ackSeq);
+
+            strcat(messageBuffer,receivedPacket.message.context);
+            printf("\nMessage: ");  
+            for (int i = 0; i <= strlen(messageBuffer); i++) {
+                printf("%c", messageBuffer[i]);
             }
+            printf("\n");
+                
+
         } else {
-            nextSeq = 0; // Indicates that the message is received in its entirety and there is no next sequence
+            ackSeq = 0; // Indicates that the message is received in its entirety and there is no next sequence
+            
+            printf("Message: ");
+            for (int i = 0; i <= receivedPacket.header.lastByteIndex; i++) {
+                printf("%c", receivedPacket.message.context[i]);
+            }
+            printf("\n");
         }
 
-        if (sendto(serverSocket, &nextSeq, sizeof(nextSeq), 0, (struct sockaddr*)&clientAddress, clientAddressLength) < 0) {
+        if (sendto(serverSocket, &ackSeq, sizeof(ackSeq), 0, (struct sockaddr*)&clientAddress, clientAddressLength) < 0) {
             perror("Packet sending failed");
             exit(EXIT_FAILURE);
         }
