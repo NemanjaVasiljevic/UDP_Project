@@ -24,6 +24,7 @@ typedef struct {
     int window;
     int seqNum;
     int ackNum;
+    uint16_t checkSum;
 } Header;
 
 typedef struct {
@@ -31,7 +32,7 @@ typedef struct {
     Message message;
 } Packet;
 
-
+uint16_t calculateChecksum(const char* data, size_t length);
 
 int main() {
 
@@ -80,6 +81,7 @@ int main() {
 
     // Prepare packet
     char partedMessage[MAX_MESSAGE_LEN];
+    size_t messageLen = 0;
 
     while(1){
 
@@ -97,7 +99,7 @@ int main() {
         packet->header.lastByteIndex = strlen(messageBuffer)-1;
         packet->header.ackNum = -1; //za slucaj da moze celo da se posalje
         packet->header.seqNum = -1; //za slucaj da moze celo da se posalje
-
+        messageLen = strlen(messageBuffer);
 
 
         //delim poruke na parcice ukoliko je to potrebno
@@ -106,7 +108,7 @@ int main() {
             double x  = (double)packet->header.lastByteIndex/(double)serverWindow;
             double messageParts = ceil(x);
             int j = 0;
-            int byteCount = 0;
+            int sequence = 0;
             
 
             while(messageParts != 0){
@@ -124,11 +126,13 @@ int main() {
                     }
                 }
 
-                byteCount++;
-                packet->header.seqNum = byteCount; //ovo predstavlja redni broj poslednjeg bajta u nizu koji se salje
+                sequence++;
+                packet->header.seqNum = sequence; 
                 memcpy(packet->message.context,partedMessage,sizeof(partedMessage));
                 packet->header.firstByteIndex = 0;
-                packet->header.lastByteIndex = j - 1; //ovde se azurira ukupna duzina poruke
+                packet->header.lastByteIndex = j - 1;
+                messageLen = strlen(partedMessage);
+                packet->header.checkSum = calculateChecksum(partedMessage,messageLen);
 
                 int resendCounter = 0;
                 int serverResponse = 0;
@@ -200,6 +204,7 @@ int main() {
         }else{
             // Salje se cela poruka
             strcpy(packet->message.context,messageBuffer);
+            packet->header.checkSum = calculateChecksum(messageBuffer,messageLen);
             
             int resendCounter = 0;
             int serverResponse = 0;
@@ -265,4 +270,27 @@ int main() {
     close(clientSocket);
 
     return 0;
+}
+
+
+uint16_t calculateChecksum(const char* data, size_t length) {
+    uint32_t sum = 0;
+
+    // Process the data in 16-bit chunks
+    while (length > 1) {
+        sum += *(uint16_t*)data;
+        data += 2;
+        length -= 2;
+    }
+
+    // If the length is odd, process the last byte
+    if (length > 0)
+        sum += *(uint8_t*)data;
+
+    // Fold any carry bits into the lower 16 bits
+    while (sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
+
+    // Take the one's complement of the final sum
+    return (uint16_t)~sum;
 }

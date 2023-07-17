@@ -18,12 +18,18 @@ typedef struct {
     int window;
     int seqNum;
     int ackNum;
+    uint16_t checkSum;
 } Header;
 
 typedef struct {
     Header header;
     Message message;
 } Packet;
+
+
+int verifyChecksum(const char* data, size_t length, uint16_t receivedChecksum);
+uint16_t calculateChecksum(const char* data, size_t length);
+
 
 int main() {
     int serverSocket;
@@ -52,7 +58,7 @@ int main() {
 
     int serverWindow = 0;
     int clientWindow = 0;
-    int lastProcessedSeqNum = -1;
+    int lastProcessedSeqNum = -2;
 
     printf("Enter server window size in bytes: ");
     scanf("%d", &serverWindow);
@@ -73,11 +79,12 @@ int main() {
     fflush(stdin);
 
 
-    //sleep(10); //test za resend
+    sleep(10); //test za resend
 
     Packet receivedPacket;
     char messageBuffer[MAX_MESSAGE_LEN];
     memset(messageBuffer,0,sizeof(messageBuffer));
+    int ackSeq = 0;
 
     while (1) {
 
@@ -88,17 +95,33 @@ int main() {
 
         memcpy(&receivedPacket, buffer, sizeof(Packet));
 
+        // ako je trenutni seqNum manji od poslednjeg ack znaci da je dosao novi paket na red za slanje
+        // te se brise sve iz messageBuffera da bi bio prazan za novi paket
+        if(ackSeq > receivedPacket.header.seqNum){
+            memset(messageBuffer,0,sizeof(messageBuffer));
+        }    
+
         //ovim se resavam duplikata i dobijam samo jedan paket tokom ponovnog slanja npr. 3 puta je pokusato slanje
         //poruke "dan" on ce je nakon prvog uspesnog primanja sacuvati i sve ostale poruke sa istom vrednoscu seqNum 
         //ce da preskoci jer je tu sekvencu vec dobio
-        if (receivedPacket.header.seqNum <= lastProcessedSeqNum && receivedPacket.header.seqNum != -1) {
+        if (receivedPacket.header.seqNum == lastProcessedSeqNum) {
             printf("Duplicate message received. Ignoring...\n");
             continue;
         }
 
         lastProcessedSeqNum = receivedPacket.header.seqNum;
-        int ackSeq = receivedPacket.header.seqNum;
+        ackSeq = receivedPacket.header.seqNum;
 
+        if(!verifyChecksum(receivedPacket.message.context, strlen(receivedPacket.message.context),receivedPacket.header.checkSum)){
+            ackSeq = -5;
+            if (sendto(serverSocket, &ackSeq, sizeof(ackSeq), 0, (struct sockaddr*)&clientAddress, clientAddressLength) < 0) {
+                perror("Packet sending failed");
+                exit(EXIT_FAILURE);
+            }
+            continue;
+        }else{
+            printf("\nChecksum is ok\n");
+        }
 
         if (receivedPacket.header.seqNum != -1) {
 
@@ -115,9 +138,10 @@ int main() {
         } else {
             ackSeq = 0; // Indicates that the message is received in its entirety and there is no next sequence
             
-            printf("Message: ");
-            for (int i = 0; i <= receivedPacket.header.lastByteIndex; i++) {
-                printf("%c", receivedPacket.message.context[i]);
+            memcpy(messageBuffer,receivedPacket.message.context,strlen(receivedPacket.message.context));
+            printf("\nMessage: ");  
+            for (int i = 0; i <= strlen(messageBuffer); i++) {
+                printf("%c", messageBuffer[i]);
             }
             printf("\n");
         }
@@ -132,4 +156,31 @@ int main() {
     close(serverSocket);
 
     return 0;
+}
+
+
+int verifyChecksum(const char* data, size_t length, uint16_t receivedChecksum) {
+    uint16_t calculatedChecksum = calculateChecksum(data, length);
+    return (receivedChecksum == calculatedChecksum);
+}
+uint16_t calculateChecksum(const char* data, size_t length) {
+    uint32_t sum = 0;
+
+    // Process the data in 16-bit chunks
+    while (length > 1) {
+        sum += *(uint16_t*)data;
+        data += 2;
+        length -= 2;
+    }
+
+    // If the length is odd, process the last byte
+    if (length > 0)
+        sum += *(uint8_t*)data;
+
+    // Fold any carry bits into the lower 16 bits
+    while (sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
+
+    // Take the one's complement of the final sum
+    return (uint16_t)~sum;
 }
